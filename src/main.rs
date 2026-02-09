@@ -1,10 +1,11 @@
+use chrono::{Datelike, Timelike};
 use clap::Parser;
 use io_gate::comm;
 use io_gate::config::Config;
 use io_gate::homeassistant::{self, discovery, HomeAssistant};
-use io_gate::message::{args::OutputState, Message};
+use io_gate::message::{args::InfoCode, args::OutputState, Message};
 use std::sync::Arc;
-use tracing::{error, info, warn};
+use tracing::{error, info};
 use tracing_subscriber::filter::LevelFilter;
 use tracing_subscriber::{fmt, EnvFilter};
 
@@ -109,7 +110,7 @@ async fn main() -> anyhow::Result<()> {
 
     // USB -> MQTT
     let ha_sender = ha.clone();
-    tokio::spawn(async move {
+    let task_usb_to_mqtt = async move {
         loop {
             let raw = if let Some(raw) = comm.rx.recv().await {
                 raw
@@ -117,13 +118,15 @@ async fn main() -> anyhow::Result<()> {
                 // The other end died.
                 break;
             };
-            info!("CAN->RX: TEMP RAW {:?}", raw);
-            let msg = if let Ok(msg) = Message::from_raw(&raw) {
+            let msg = Message::from_raw(&raw);
+            let msg = if let Ok(msg) = msg {
                 msg
             } else {
-                error!("Unable to parse message");
+                error!("{:?}", msg);
                 continue;
             };
+            let (device_addr, _) = raw.addr_type();
+
             info!("CAN->RX: Message {:?}", msg);
             // TODO: Push state messages
             match msg {
@@ -134,8 +137,6 @@ async fn main() -> anyhow::Result<()> {
                         error!("Triggering (switching current) state is not supported.");
                         continue;
                     };
-
-                    let (device_addr, _) = raw.addr_type();
 
                     let result = ha_sender
                         .send(homeassistant::Outgoing::OutputChanged {
@@ -149,18 +150,32 @@ async fn main() -> anyhow::Result<()> {
                         break;
                     }
                 }
+                Message::Info { code, arg } => {
+                    if code == InfoCode::Started.to_bytes() {
+                        info!("Device just started: {}", device_addr);
+                        // TODO: Cleanup device state?
+                    } else {
+                        info!(
+                            code = code,
+                            arg = arg,
+                            "Got unhandled info message from {}",
+                            device_addr
+                        );
+                    }
+                }
                 _ => {
                     info!("Unhandled incoming message, ignoring: {:?}", msg);
                     continue;
                 }
             }
         }
-        warn!("USB->MQTT task finishing");
+        info!("USB->MQTT task finishing");
         Err::<(), ()>(())
-    });
+    };
 
     // MQTT -> USB
-    tokio::spawn(async move {
+    let comm_tx = comm.tx.clone();
+    let task_mqtt_to_usb = async move {
         loop {
             let msg = if let Some(msg) = ha.recv().await {
                 msg
@@ -181,7 +196,7 @@ async fn main() -> anyhow::Result<()> {
                     let addr = device;
                     let raw = msg.to_raw(addr);
                     info!("Sending output change request over USB {:?}", raw);
-                    if comm.tx.send(raw).await.is_err() {
+                    if comm_tx.send(raw).await.is_err() {
                         // The other side died.
                         break;
                     }
@@ -189,16 +204,37 @@ async fn main() -> anyhow::Result<()> {
             }
         }
         // Return Err to break try_join
-        warn!("MQTT->USB task finishing");
+        info!("MQTT->USB task finishing");
         Err::<(), ()>(())
+    };
+
+    let comm_tx = comm.tx.clone();
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+
+            let now = chrono::offset::Local::now();
+            let msg = Message::TimeAnnouncement {
+                year: now.year() as u16,
+                month: now.month() as u8,
+                day: now.day() as u8,
+                hour: now.hour() as u8,
+                minute: now.minute() as u8,
+                second: now.second() as u8,
+                day_of_week: now.weekday().number_from_monday() as u8,
+            };
+            let addr = 0;
+            let raw = msg.to_raw(addr);
+            info!("Broadcasting current time {:?}", msg);
+            if comm_tx.send(raw).await.is_err() {
+                // Transmitter died.
+                break;
+            }
+        }
     });
 
-    // TODO: Periodic time updates
-
-    // Wait for tasks.
-    let (reader_ret, writer_ret) = tokio::try_join!(comm.reader, comm.writer)?;
-    info!("Comm tasks finished: {:?} {:?}", reader_ret, writer_ret);
-    reader_ret?;
-    writer_ret?;
+    // Wait for tasks. If any side dies (comm.reader, comm.writer) this should
+    // close the program.
+    let _ = tokio::try_join!(task_mqtt_to_usb, task_usb_to_mqtt);
     Ok(())
 }

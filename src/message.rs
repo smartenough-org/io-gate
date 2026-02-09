@@ -339,8 +339,15 @@ impl Message {
 
             msg_type::REQUEST_STATUS => Ok(Message::RequestStatus),
 
-            msg_type::INFO | msg_type::ERROR | msg_type::STATUS => {
-                bail!("Ignoring info/error/status message: {:?}", raw);
+            msg_type::INFO => {
+                let code: u16 = u16::from_le_bytes([raw.data[0], raw.data[1]]);
+                let arg: u32 = 0;
+
+                Ok(Message::Info { code, arg })
+            }
+
+            msg_type::ERROR | msg_type::STATUS => {
+                bail!("Ignoring error/status message: {:?}", raw);
             }
 
             msg_type::OUTPUT_CHANGED => {
@@ -408,6 +415,26 @@ impl Message {
                 raw.data[0..4].copy_from_slice(&uptime.to_le_bytes());
                 raw.data[4..6].copy_from_slice(&inputs.to_le_bytes());
                 raw.data[6..8].copy_from_slice(&outputs.to_le_bytes());
+            }
+
+            Message::TimeAnnouncement {
+                year,
+                month,
+                day,
+                hour,
+                minute,
+                second,
+                day_of_week,
+            } => {
+                raw.msg_type = msg_type::TIME_ANNOUNCEMENT;
+                raw.length = 2 + 1 + 1 + 1 + 1 + 1 + 1;
+                raw.data[0..2].copy_from_slice(&year.to_le_bytes());
+                raw.data[2] = *month;
+                raw.data[3] = *day;
+                raw.data[4] = *hour;
+                raw.data[5] = *minute;
+                raw.data[6] = *second;
+                raw.data[7] = *day_of_week;
             }
             /* we only parse those.
             Message::TimeAnnouncement { year, month, day, hour, minute, second } => todo!(),

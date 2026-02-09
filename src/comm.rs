@@ -1,4 +1,5 @@
 use crate::message::MessageRaw;
+use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt, ReadHalf, WriteHalf};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
@@ -13,7 +14,7 @@ const SYNC_BYTE_1: u8 = 0x21; // !
 const SYNC_BYTE_2_CAN: u8 = 0x7C; // |
 
 pub struct Comm {
-    pub tx: mpsc::Sender<MessageRaw>,
+    pub tx: Arc<mpsc::Sender<MessageRaw>>,
     pub rx: mpsc::Receiver<MessageRaw>,
     pub reader: JoinHandle<anyhow::Result<()>>,
     pub writer: JoinHandle<anyhow::Result<()>>,
@@ -136,7 +137,7 @@ pub async fn run(port_name: String, baud_rate: u32) -> anyhow::Result<Comm> {
     let writer_handle = tokio::spawn(writer);
 
     Ok(Comm {
-        tx: out_tx,
+        tx: Arc::new(out_tx),
         rx: in_rx,
         writer: writer_handle,
         reader: reader_handle,
