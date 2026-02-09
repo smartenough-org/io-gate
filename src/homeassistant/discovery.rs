@@ -1,7 +1,8 @@
-use crate::config;
+use crate::{config, consts};
 use serde::Serialize;
 use serde_json;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use tracing::warn;
 
 /// Device identifier
 #[derive(Serialize, Debug, Default)]
@@ -30,7 +31,6 @@ pub struct Component {
     pub device_class: String,
     // pub icon: String,
     pub unique_id: String,
-    /// smartenough/
     pub command_topic: String,
     pub state_topic: String,
 }
@@ -43,8 +43,18 @@ impl Component {
             device_class: "switch".to_string(),
             // icon: "mdi:light".to_string(),
             unique_id: format!("io-gate-{}-{}", device_addr, idx),
-            command_topic: format!("smartenough/{}/switch/{}/set", device_addr, idx),
-            state_topic: format!("smartenough/{}/switch/{}/get", device_addr, idx),
+            command_topic: format!(
+                "{}/{}/switch/{}/set",
+                consts::HA_CONTROL_TOPIC,
+                device_addr,
+                idx
+            ),
+            state_topic: format!(
+                "{}/{}/switch/{}/state",
+                consts::HA_CONTROL_TOPIC,
+                device_addr,
+                idx
+            ),
         }
     }
 }
@@ -69,9 +79,9 @@ impl Discovery {
 
 pub fn new_device(name: &str, config: &config::DeviceConfig) -> Discovery {
     let origin = Origin {
-        name: crate::consts::GATE_NAME.to_string(),
-        sw_version: crate::consts::GATE_VERSION.to_string(),
-        support_url: crate::consts::GATE_URL.to_string(),
+        name: consts::GATE_NAME.to_string(),
+        sw_version: consts::GATE_VERSION.to_string(),
+        support_url: consts::GATE_URL.to_string(),
     };
 
     let device_id = DeviceId {
@@ -81,6 +91,11 @@ pub fn new_device(name: &str, config: &config::DeviceConfig) -> Discovery {
     };
 
     let mut components = HashMap::new();
+
+    let unique: HashSet<String> = config.outputs.labels.iter().cloned().collect();
+    if unique.len() != config.outputs.labels.len() {
+        warn!("Duplicated labels in list: {:?}", config.outputs.labels);
+    }
 
     for i in 0..config.outputs.count {
         let name = if let Some(label) = config.outputs.labels.get(i as usize) {

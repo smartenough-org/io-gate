@@ -14,6 +14,9 @@ pub enum Outgoing {
     /// Usually:
     /// homeassistant/device/io-gate-[devaddr]/config
     DiscoveryDevice(discovery::Discovery),
+
+    /// Device reports the output was changed
+    OutputChanged { device: u8, output: u8, on: bool },
 }
 
 /// Things HA sents to us (like: trigger switch)
@@ -29,5 +32,5 @@ pub enum Incoming {
         output: u8,
         /// On or off.
         on: bool,
-    }
+    },
 }

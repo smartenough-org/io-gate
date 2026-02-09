@@ -60,8 +60,8 @@ mod msg_type {
 }
 
 pub mod args {
-    pub use anyhow::bail;
     pub use crate::consts::Trigger;
+    pub use anyhow::bail;
 
     #[derive(Clone, Copy, Debug)]
     #[repr(u16)]
@@ -105,6 +105,14 @@ pub mod args {
                 Self::On
             } else {
                 Self::Off
+            }
+        }
+
+        pub fn try_to_bool(&self) -> anyhow::Result<bool> {
+            match self {
+                Self::Off => Ok(false),
+                Self::On => Ok(true),
+                Self::Toggle => bail!("Not convertable"),
             }
         }
     }
@@ -282,7 +290,7 @@ impl MessageRaw {
 }
 
 impl Message {
-    pub fn from_raw(raw: MessageRaw) -> anyhow::Result<Self> {
+    pub fn from_raw(raw: &MessageRaw) -> anyhow::Result<Self> {
         match raw.msg_type {
             msg_type::SET_OUTPUT => {
                 if raw.length != 2 {
@@ -317,17 +325,16 @@ impl Message {
             msg_type::TIME_ANNOUNCEMENT => {
                 if raw.length != 2 + 1 + 1 + 1 + 1 + 1 + 1 {
                     bail!("Time announcement has invalid message length {:?}", raw);
-                } else {
-                    Ok(Message::TimeAnnouncement {
-                        year: u16::from_le_bytes([raw.data[0], raw.data[1]]),
-                        month: raw.data[2],
-                        day: raw.data[3],
-                        hour: raw.data[4],
-                        minute: raw.data[5],
-                        second: raw.data[6],
-                        day_of_week: raw.data[7],
-                    })
                 }
+                Ok(Message::TimeAnnouncement {
+                    year: u16::from_le_bytes([raw.data[0], raw.data[1]]),
+                    month: raw.data[2],
+                    day: raw.data[3],
+                    hour: raw.data[4],
+                    minute: raw.data[5],
+                    second: raw.data[6],
+                    day_of_week: raw.data[7],
+                })
             }
 
             msg_type::REQUEST_STATUS => Ok(Message::RequestStatus),
@@ -336,8 +343,16 @@ impl Message {
                 bail!("Ignoring info/error/status message: {:?}", raw);
             }
 
-            msg_type::OUTPUT_CHANGED | msg_type::INPUT_TRIGGERED => {
-                bail!("Ignoring output/input change message {:?}", raw);
+            msg_type::OUTPUT_CHANGED => {
+                if raw.length != 2 {
+                    bail!("Output changed has invalid message length {:?}", raw);
+                }
+                let output = raw.data[0];
+                let state = args::OutputState::from_u8(raw.data[1])?;
+                Ok(Message::OutputChanged { output, state })
+            }
+            msg_type::INPUT_TRIGGERED => {
+                bail!("Ignoring input triggered message {:?}", raw);
             }
 
             _ => {
@@ -349,9 +364,9 @@ impl Message {
 
     /// Convert message to 11 bit address and up to 8 bytes of data to be sent via CAN.
     pub fn to_raw(&self, addr: u8) -> MessageRaw {
-        let mut raw = MessageRaw{
+        let mut raw = MessageRaw {
             addr,
-            .. MessageRaw::default()
+            ..MessageRaw::default()
         };
 
         match self {

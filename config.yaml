@@ -9,7 +9,6 @@ living-room:
     labels:
       - light1
       - light2
-      - light2
       - light3
       - light4
       - light5

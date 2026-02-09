@@ -28,8 +28,7 @@ async fn reader(
         let read_len: usize = match port.read(&mut buf).await {
             Ok(count) if count > 0 => count,
             Ok(_) => {
-                println!("Probably disconnected? Length 0");
-                anyhow::bail!("Disconnected");
+                anyhow::bail!("Reader disconnected");
             }
             Err(e) => {
                 println!("Error {:?}", e);
@@ -95,8 +94,6 @@ async fn writer(
         let mut buf = [0u8; 64];
         let msg = channel.recv().await;
         if let Some(msg) = msg {
-            // TODO: Now it assumes CAN frames only.
-
             let (addr, msg_type) = msg.addr_type();
             let total_size = PREAMBULE_LENGTH + CAN_MESSAGE_LENGTH;
 

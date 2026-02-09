@@ -6,7 +6,7 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::{sync::Mutex, task};
 
-use tracing::{info, warn, debug, error};
+use tracing::{debug, error, info, warn};
 
 pub struct Initiator {
     client: AsyncClient,
@@ -64,11 +64,18 @@ impl Initiator {
             let result = match notification {
                 Ok(Event::Incoming(Packet::Publish(msg))) => {
                     // This can be ON/OFF messaging
-                    info!("RX message to {} with payload '{:?}'", msg.topic, msg.payload);
+                    info!(
+                        "RX message on {} with payload '{:?}'",
+                        msg.topic, msg.payload
+                    );
                     let topic = &msg.topic;
                     let parts: Vec<&str> = topic.split("/").collect();
                     // Maybe regexp instead?
-                    if parts.len() == 5 && parts[0] == "smartenough" && parts[2] == "switch" && parts[4] == "set" {
+                    if parts.len() == 5
+                        && parts[0] == "smartenough"
+                        && parts[2] == "switch"
+                        && parts[4] == "set"
+                    {
                         // This is a command setting output to particular value.
                         let device = parts[1].parse::<u8>();
                         if device.is_err() {
@@ -77,7 +84,7 @@ impl Initiator {
                         }
                         let device = device.unwrap();
 
-                        let output= parts[3].parse::<u8>();
+                        let output = parts[3].parse::<u8>();
                         if output.is_err() {
                             warn!("Output index is not a 0-255 number: {}", parts[3]);
                             continue;
@@ -85,24 +92,20 @@ impl Initiator {
                         let output = output.unwrap();
                         let on = msg.payload == "ON";
 
-                        let message = Incoming::SetOutput {
-                            device,
-                            output,
-                            on,
-                        };
+                        let message = Incoming::SetOutput { device, output, on };
                         queue.send(message).await
                     } else {
                         info!("Unknown topic - ignoring");
                         continue;
                     }
                 }
-                Ok(Event::Outgoing(_)) |
-                Ok(Event::Incoming(Packet::PingResp)) |
-                Ok(Event::Incoming(Packet::SubAck(_))) |
-                Ok(Event::Incoming(Packet::PubAck(_))) => {
+                Ok(Event::Outgoing(_))
+                | Ok(Event::Incoming(Packet::PingResp))
+                | Ok(Event::Incoming(Packet::SubAck(_)))
+                | Ok(Event::Incoming(Packet::PubAck(_))) => {
                     // Silence common messages
                     continue;
-                },
+                }
                 _ => {
                     info!("Received other message = {:?}", notification);
                     continue;
@@ -123,9 +126,7 @@ impl Initiator {
             if let Some(command) = queue.recv().await {
                 match command {
                     Outgoing::Subscribe(topic) => {
-                        let result = client
-                            .subscribe(&topic, QoS::AtMostOnce)
-                            .await;
+                        let result = client.subscribe(&topic, QoS::AtMostOnce).await;
                         if result.is_err() {
                             warn!("Unable to subscribe to a topic {}. Hard fail", topic);
                             panic!("Unable to continue");
@@ -161,6 +162,22 @@ impl Initiator {
                             .await;
                         if result.is_err() {
                             error!("Unable to publish discovery message {:?}", result);
+                        }
+                    }
+                    Outgoing::OutputChanged { device, output, on } => {
+                        let topic = format!(
+                            "{}/{}/switch/{}/state",
+                            consts::HA_CONTROL_TOPIC,
+                            device,
+                            output
+                        );
+                        let payload = if on { "ON" } else { "OFF" };
+                        debug!("Sending state payload to {}: {}", topic, payload);
+                        let result = client
+                            .publish(topic, QoS::AtLeastOnce, false, payload)
+                            .await;
+                        if result.is_err() {
+                            error!("Unable to publish state message {:?}", result);
                         }
                     }
                 }

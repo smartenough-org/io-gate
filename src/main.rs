@@ -3,10 +3,10 @@ use io_gate::comm;
 use io_gate::config::Config;
 use io_gate::homeassistant::{self, discovery, HomeAssistant};
 use io_gate::message::{args::OutputState, Message};
-use tracing::info;
-use tracing_subscriber::{EnvFilter, fmt};
+use std::sync::Arc;
+use tracing::{error, info, warn};
 use tracing_subscriber::filter::LevelFilter;
-
+use tracing_subscriber::{fmt, EnvFilter};
 
 #[derive(Parser, Debug)]
 struct Args {
@@ -50,13 +50,11 @@ fn init_log() {
 
     let filter = EnvFilter::builder()
         .with_default_directive(LevelFilter::DEBUG.into())
-        .from_env().expect("RUST_LOG configuration is valid")
+        .from_env()
+        .expect("RUST_LOG configuration is valid")
         .add_directive("rumqttc=info".parse().unwrap());
 
-    fmt()
-        .event_format(format)
-        .with_env_filter(filter)
-        .init();
+    fmt().event_format(format).with_env_filter(filter).init();
 }
 
 /// Perform initial configuration and device discovery.
@@ -66,7 +64,10 @@ async fn init_config(config: &Config, ha: &HomeAssistant) -> anyhow::Result<()> 
 
         // Subscribe to HomeAssistant state changes.
         for component in message.components.values() {
-            ha.send(homeassistant::Outgoing::Subscribe(component.command_topic.clone())).await?;
+            ha.send(homeassistant::Outgoing::Subscribe(
+                component.command_topic.clone(),
+            ))
+            .await?;
         }
 
         // Send discovery message to register/update device in HA.
@@ -94,7 +95,7 @@ async fn main() -> anyhow::Result<()> {
     )
     .await;
     ha_init.set_topics("iogatetest", "iogatepub").await;
-    let ha = ha_init.start().await;
+    let ha = Arc::new(ha_init.start().await);
 
     ha.send(homeassistant::Outgoing::Initial)
         .await
@@ -107,18 +108,55 @@ async fn main() -> anyhow::Result<()> {
     info!("io-gate initialized.");
 
     // USB -> MQTT
+    let ha_sender = ha.clone();
     tokio::spawn(async move {
-        // TEMP: Receiver
         loop {
-            let msg = if let Some(msg) = comm.rx.recv().await {
-                msg
+            let raw = if let Some(raw) = comm.rx.recv().await {
+                raw
             } else {
                 // The other end died.
                 break;
             };
-            let msg = Message::from_raw(msg);
+            info!("CAN->RX: TEMP RAW {:?}", raw);
+            let msg = if let Ok(msg) = Message::from_raw(&raw) {
+                msg
+            } else {
+                error!("Unable to parse message");
+                continue;
+            };
             info!("CAN->RX: Message {:?}", msg);
+            // TODO: Push state messages
+            match msg {
+                Message::OutputChanged { output, state } => {
+                    let on = if let Ok(on) = state.try_to_bool() {
+                        on
+                    } else {
+                        error!("Triggering (switching current) state is not supported.");
+                        continue;
+                    };
+
+                    let (device_addr, _) = raw.addr_type();
+
+                    let result = ha_sender
+                        .send(homeassistant::Outgoing::OutputChanged {
+                            device: device_addr,
+                            output,
+                            on,
+                        })
+                        .await;
+                    if result.is_err() {
+                        // The other end died.
+                        break;
+                    }
+                }
+                _ => {
+                    info!("Unhandled incoming message, ignoring: {:?}", msg);
+                    continue;
+                }
+            }
         }
+        warn!("USB->MQTT task finishing");
+        Err::<(), ()>(())
     });
 
     // MQTT -> USB
@@ -144,17 +182,22 @@ async fn main() -> anyhow::Result<()> {
                     let raw = msg.to_raw(addr);
                     info!("Sending output change request over USB {:?}", raw);
                     if comm.tx.send(raw).await.is_err() {
+                        // The other side died.
                         break;
                     }
-                },
+                }
             }
         }
+        // Return Err to break try_join
+        warn!("MQTT->USB task finishing");
+        Err::<(), ()>(())
     });
 
     // TODO: Periodic time updates
 
     // Wait for tasks.
     let (reader_ret, writer_ret) = tokio::try_join!(comm.reader, comm.writer)?;
+    info!("Comm tasks finished: {:?} {:?}", reader_ret, writer_ret);
     reader_ret?;
     writer_ret?;
     Ok(())

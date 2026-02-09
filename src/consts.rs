@@ -33,3 +33,4 @@ pub const GATE_NAME: &str = "io-gate";
 pub const GATE_URL: &str = env!("CARGO_PKG_HOMEPAGE");
 
 pub const HA_DISCOVERY_TOPIC: &str = "homeassistant";
+pub const HA_CONTROL_TOPIC: &str = "smartenough";
