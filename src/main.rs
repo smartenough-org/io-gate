@@ -1,3 +1,4 @@
+use anyhow::Context;
 use chrono::{Datelike, Timelike};
 use clap::Parser;
 use io_gate::comm;
@@ -84,7 +85,9 @@ async fn main() -> anyhow::Result<()> {
     init_log();
     let args = Args::parse();
 
-    let config = Config::from_file(&args.config_path)?;
+    let config = Config::from_file(&args.config_path)
+        .context(format!("Unable to read config file {}", args.config_path))?;
+
     info!("Starting IO Gate. Args: {:?} Config: {:?}", args, config);
 
     let mut ha_init = homeassistant::Initiator::new(
@@ -127,7 +130,7 @@ async fn main() -> anyhow::Result<()> {
             };
             let (device_addr, _) = raw.addr_type();
 
-            info!("CAN->RX: Message {:?}", msg);
+            info!("CAN->RX: Addr {} Message {:?}", device_addr, msg);
             // TODO: Push state messages
             match msg {
                 Message::OutputChanged { output, state } => {
@@ -211,6 +214,16 @@ async fn main() -> anyhow::Result<()> {
     let comm_tx = comm.tx.clone();
     tokio::spawn(async move {
         loop {
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+
+
+            let msg = Message::Ping { body: 32134 };
+            let raw = msg.to_raw(0x3f);
+            if comm_tx.send(raw).await.is_err() {
+                break;
+            }
+
+
             tokio::time::sleep(std::time::Duration::from_secs(60)).await;
 
             let now = chrono::offset::Local::now();

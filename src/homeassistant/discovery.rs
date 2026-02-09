@@ -2,7 +2,7 @@ use crate::{config, consts};
 use serde::Serialize;
 use serde_json;
 use std::collections::{HashMap, HashSet};
-use tracing::warn;
+use tracing::error;
 
 /// Device identifier
 #[derive(Serialize, Debug, Default)]
@@ -92,20 +92,23 @@ pub fn new_device(name: &str, config: &config::DeviceConfig) -> Discovery {
 
     let mut components = HashMap::new();
 
-    let unique: HashSet<String> = config.outputs.labels.iter().cloned().collect();
-    if unique.len() != config.outputs.labels.len() {
-        warn!("Duplicated labels in list: {:?}", config.outputs.labels);
-    }
+    // Check for duplicates.
+    let unique_label: HashSet<String> = HashSet::new();
+    let unique_id: HashSet<u8> = HashSet::new();
 
-    for i in 0..config.outputs.count {
-        let name = if let Some(label) = config.outputs.labels.get(i as usize) {
-            label.to_string()
-        } else {
-            format!("{}-{}", name, i)
-        };
-        let component = Component::new_switch(&name, config.addr, i);
+    for (label, io) in config.outputs.iter() {
+        if unique_label.contains(label) {
+            error!("Duplicated label {} in device {:?}", label, name);
+            continue;
+        }
+        if unique_id.contains(&io.id) {
+            error!("Duplicated IO id {} in device {:?}", io.id, name);
+            continue;
+        }
 
-        components.insert(name, component);
+        // Create device components.
+        let component = Component::new_switch(&label, config.addr, io.id);
+        components.insert(label.clone(), component);
     }
 
     Discovery {

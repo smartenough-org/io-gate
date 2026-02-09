@@ -1,35 +1,57 @@
 # Each device has an entry
 living-room:
-  # Has address on the bus
+  # Device address on the CAN bus
   addr: 1
   outputs:
-    # Number of outputs (switchable)
-    count: 8
-    # Outputs can be labeled in the order:
-    labels:
-      - light1
-      - light2
-      - light3
-      - light4
-      - light5
-      - light6
-      - light7
-      - light8
+    light1:
+      id: 1
+      # type: light # TODO?
+    'name with space':
+      id: 2
+    light3:
+      id: 3
+    light4:
+      id: 4
+    light5:
+      id: 5
+    light6:
+      id: 6
+    light7:
+      id: 7
+    light8:
+      id: 8
+    light9:
+      id: 9
+    light10:
+      id: 10
+
+
+    # # Number of outputs (switchable)
+    # count: 8
+    # # Outputs can be labeled in the order:
+    # labels:
+    #   - light1
+    #   - light2
+    #   - light3
+    #   - light4
+    #   - light5
+    #   - light6
+    #   - light7
+    #   - light8
   inputs:
     # Can have a number of inputs that are not switchable (binary inputs)
-    count: 4
-    # And can be labeled
-    labels:
-      - room1-window
-      - room1-door
-      - room2-window
-      - room2-door
+    room1-window:
+      id: 1
+    room1-door:
+      id: 2
+    room2-window:
+      id: 3
+    room2-door:
+      id: 4
 
 second-floor:
   addr: 2
   outputs:
-    count: 2
-    labels: []
-  inputs:
-    count: 0
-    labels: []
+    light:
+      id: 1
+  inputs: {}

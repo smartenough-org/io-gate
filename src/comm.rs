@@ -79,6 +79,15 @@ async fn reader(
         let addr = packet[0];
         let msg_type = packet[1];
         let length = packet[2] as usize;
+        if packet.len() < 3 + length {
+            info!(
+                length = length,
+                buf_len = packet.len(),
+                prefix = 3,
+                "Invalid length or packet too short"
+            );
+            continue;
+        }
         let data = &packet[3..3 + length];
         debug!("USB->RX: {} bytes: {:02x?}", body_len, packet);
 

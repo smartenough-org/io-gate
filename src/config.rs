@@ -5,17 +5,18 @@ use std::path::Path;
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct GroupConfig {
-    pub count: u8,
-    pub labels: Vec<String>,
+pub struct IOConfig {
+    pub id: u8,
+    #[serde(rename = "type")]
+    pub io_type: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DeviceConfig {
     pub addr: u8,
-    pub outputs: GroupConfig,
-    pub inputs: GroupConfig,
+    pub outputs: HashMap<String, IOConfig>,
+    pub inputs: HashMap<String, IOConfig>,
 }
 
 #[derive(Debug, Deserialize)]
