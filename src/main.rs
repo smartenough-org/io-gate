@@ -1,100 +1,135 @@
-use anyhow::Result;
 use clap::Parser;
-use tokio::io::{AsyncReadExt, AsyncWriteExt, ReadHalf, WriteHalf};
+use io_gate::comm;
+use io_gate::config::Config;
+use io_gate::homeassistant::{self, discovery, HomeAssistant};
+use io_gate::message::{args::OutputState, Message};
 use tokio::time::Duration;
+use tracing::info;
+use tracing_subscriber::fmt;
 
-#[derive(Parser)]
+#[derive(Parser, Debug)]
 struct Args {
+    #[arg(long, default_value = "config.yaml")]
+    config_path: String,
+
+    // USB Connection
     #[arg(long, default_value = "/dev/ttyACM0")]
     port_name: String,
     #[arg(long, default_value_t = 115200)]
     baud_rate: u32,
+
+    // MQTT connection
+    #[arg(long)]
+    mqtt_host: String,
+    #[arg(long, default_value_t = 1883)]
+    mqtt_port: u16,
+    #[arg(long, default_value = "")]
+    mqtt_username: String,
+    #[arg(long, default_value = "")]
+    mqtt_password: String,
+
+    // Other
+    #[arg(long, default_value = "io-gate")]
+    device_name: String,
 }
 
-const SYNC_BYTE_1: u8 = 0x21;
-const SYNC_BYTE_2: u8 = 0x7C;
+fn init_log() {
+    let timer = fmt::time::ChronoLocal::new("%H:%M:%S%.3f".to_string());
 
-async fn handle_incoming(packet: &[u8]) -> Result<()> {
-    println!("Got synchronized. Buf: {:?}", &packet);
+    // Configure a custom event formatter
+    let format = fmt::format()
+        .with_level(true)
+        .with_target(false)
+        .with_thread_ids(false)
+        .with_thread_names(false)
+        .with_file(false)
+        .with_source_location(true)
+        .with_timer(timer)
+        .compact();
+
+    fmt()
+        .event_format(format)
+        .with_max_level(tracing::Level::TRACE)
+        .init();
+}
+
+/// Perform initial configuration and device discovery.
+async fn init_config(config: &Config, ha: &HomeAssistant) -> anyhow::Result<()> {
+    for (device_name, cfg) in &config.devices {
+        let message = discovery::new_device(&device_name, cfg.addr, cfg.outputs.count);
+        ha.send(homeassistant::Outgoing::DiscoveryDevice(message))
+            .await?;
+    }
+
     Ok(())
-}
-
-async fn reader(mut port: ReadHalf<tokio_serial::SerialStream>) -> Result<()> {
-    let mut buf = [0u8; 512];
-    loop {
-        match port.read(&mut buf).await {
-            Ok(count) if count > 0 => {
-                // Simplified synchronization. Could be better.
-                if buf[0] != SYNC_BYTE_1 || buf[1] != SYNC_BYTE_2 {
-                    println!(
-                        "Synchronization failed - preambule error. Skipping chunk: {:?}",
-                        &buf[0..count]
-                    );
-                    continue;
-                }
-                let length = buf[2];
-                if (2 + 1 + length) as usize != count {
-                    println!(
-                        "Synchronization failed - length {} != {} error. Skipping chunk: {:?}",
-                        length,
-                        count,
-                        &buf[0..count]
-                    );
-                    continue;
-                }
-                let packet = &buf[3..count];
-                handle_incoming(packet).await?;
-            }
-            Ok(_) => {
-                println!("Probably disconnected? Length 0");
-                anyhow::bail!("Disconnected");
-            }
-            Err(e) => {
-                println!("Error {:?}", e);
-            }
-        }
-    }
-}
-
-async fn writer(mut port: WriteHalf<tokio_serial::SerialStream>) -> Result<()> {
-    let mut message = [0u8; 64];
-    loop {
-        message[0] = 0x21; // !
-        message[1] = 0x7C; // |
-        message[2] = 4; // Packet size
-                        // Addr
-        message[3] = 0x01;
-        // Type
-        message[4] = 0x01;
-        // internal size
-        message[5] = 0x01;
-        // First byte of contents.
-        message[6] = 0xAA;
-
-        tokio::time::sleep(Duration::from_secs(1)).await;
-        match port.write(&message[0..7]).await {
-            Ok(size) => {
-                println!("Sent {} bytes: {:?}", size, &message[0..7]);
-            }
-            Err(err) => {
-                println!("Error while sending to port {:?}", err);
-            }
-        }
-    }
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    init_log();
     let args = Args::parse();
 
-    let builder = tokio_serial::new(&args.port_name, args.baud_rate);
-    let stream = tokio_serial::SerialStream::open(&builder)?;
-    let (port_read, port_write) = tokio::io::split(stream);
+    let config = Config::from_file(&args.config_path)?;
+    info!("Starting IO Gate. Args: {:?} Config: {:?}", args, config);
 
-    let reader = reader(port_read);
-    let writer = writer(port_write);
+    let mut ha_init = homeassistant::Initiator::new(
+        "io-gate-mqtt",
+        &args.mqtt_host,
+        args.mqtt_port,
+        &args.mqtt_username,
+        &args.mqtt_password,
+    )
+    .await;
+    ha_init.set_topics("iogatetest", "iogatepub").await;
+    let ha = ha_init.start().await;
+
+    ha.send(homeassistant::Outgoing::Initial)
+        .await
+        .expect("Should send");
+
+    init_config(&config, &ha).await?;
+
+    let received = ha.recv().await;
+    info!("Got {:?}", received);
+
+    let mut comm = comm::run(args.port_name, args.baud_rate).await?;
 
     println!("Hello, world!");
-    tokio::try_join!(reader, writer)?;
+    tokio::spawn(async move {
+        // TEMP: Receiver
+        loop {
+            let msg = comm.rx.recv().await;
+            info!("USB RX. Buf: {:?}", &msg);
+            if let Some(msg) = msg {
+                let msg = Message::from_raw(msg);
+                info!("Parsed to {:?}", msg);
+            } else {
+                break;
+            }
+        }
+    });
+
+    tokio::spawn(async move {
+        // TEMP: Transmitter
+        loop {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+
+            let msg = Message::SetOutput {
+                output: 5,
+                state: OutputState::Toggle,
+            };
+            let addr = 2;
+            let raw = msg.to_raw(addr);
+            info!("Sending RAW message over USB {:?}", raw);
+            if comm.tx.send(raw).await.is_err() {
+                break;
+            }
+        }
+    });
+
+    // Wait for tasks.
+    let (reader_ret, writer_ret) = tokio::try_join!(comm.reader, comm.writer)?;
+    reader_ret?;
+    writer_ret?;
     Ok(())
 }
