@@ -1,7 +1,10 @@
 // Message parsing parts moved from io-ctrl. TODO: Maybe move to a shared crate.
-use anyhow::bail;
+use tracing::{info, warn, error};
 
-use crate::consts::{InIdx, OutIdx, ProcIdx};
+use crate::{
+    consts::{InIdx, OutIdx, ProcIdx, ShutterIdx},
+    shutters,
+};
 
 /* Generic CAN has 11-bit addresses.
  * - Messages must be unique
@@ -27,7 +30,7 @@ mod msg_type {
     /// My output was changed, because of reasons.
     pub const OUTPUT_CHANGED: u8 = 0x04;
     /// My input was changed.
-    pub const INPUT_TRIGGERED: u8 = 0x05;
+    pub const INPUT_CHANGED: u8 = 0x05;
 
     /// Set output X to Y (or invert state)
     pub const SET_OUTPUT: u8 = 0x08;
@@ -35,8 +38,13 @@ mod msg_type {
     pub const TRIGGER_INPUT: u8 = 0x09;
     /// Call a predefined procedure in VM.
     pub const CALL_PROC: u8 = 0x0A;
+    /// Extended set (shutters, etc)
+    pub const CALL_SHUTTER: u8 = 0x0B;
+
     /// `Ping` of sorts.
     pub const REQUEST_STATUS: u8 = 0x0D;
+    /// My output status, not necessarily changed. Requested or initial.
+    pub const STATUS_IO: u8 = 0x0E;
 
     /// Periodic not triggered by an event status.
     pub const STATUS: u8 = 0x10;
@@ -62,8 +70,7 @@ mod msg_type {
 }
 
 pub mod args {
-    pub use crate::consts::Trigger;
-    pub use anyhow::bail;
+    pub use crate::consts::{InIdx, OutIdx, Trigger};
 
     #[derive(Clone, Copy, Debug)]
     #[repr(u16)]
@@ -73,11 +80,51 @@ pub mod args {
 
     #[derive(Clone, Copy, Debug)]
     #[repr(u8)]
-    pub enum OutputState {
+    pub enum OutputChangeRequest {
+        /// Disable output
         Off = 0,
+        /// Enable output
         On = 1,
+        /// Toggle output
         Toggle = 2,
-        // on for x?
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    #[repr(u8)]
+    pub enum IOState {
+        /// Input/Output is disabled.
+        Off = 0,
+        /// Input/Output is enabled.
+        On = 1,
+        /// IO is certainly defined, but Expander is not available.
+        Error = 2,
+        /// State is unknown. Maybe requested IO index is invalid.
+        Unknown = 3,
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    #[repr(u8)]
+    pub enum IOType {
+        /// Idx describes an Input.
+        Input(InIdx),
+        /// IDx describes an Output.
+        Output(OutIdx),
+    }
+
+    impl IOState {
+        pub fn to_bytes(self) -> u8 {
+            self as u8
+        }
+
+        pub fn from_u8(raw: u8) -> Option<Self> {
+            match raw {
+                0 => Some(IOState::Off),
+                1 => Some(IOState::On),
+                2 => Some(IOState::Error),
+                3 => Some(IOState::Unknown),
+                _ => None,
+            }
+        }
     }
 
     impl InfoCode {
@@ -86,18 +133,19 @@ pub mod args {
         }
     }
 
-    impl OutputState {
+    impl OutputChangeRequest {
         pub fn to_bytes(self) -> u8 {
             self as u8
         }
 
-        pub fn from_u8(raw: u8) -> anyhow::Result<Self> {
+        pub fn from_u8(raw: u8) -> Option<Self> {
             match raw {
-                0 => Ok(Self::Off),
-                1 => Ok(Self::On),
-                2 => Ok(Self::Toggle),
+                0 => Some(Self::Off),
+                1 => Some(Self::On),
+                2 => Some(Self::Toggle),
                 _ => {
-                    bail!("OutputState parsed from invalid arg {}", raw);
+                    // TODO: Log?
+                    None
                 }
             }
         }
@@ -110,11 +158,11 @@ pub mod args {
             }
         }
 
-        pub fn try_to_bool(&self) -> anyhow::Result<bool> {
+        pub fn try_to_bool(&self) -> Option<bool> {
             match self {
-                Self::Off => Ok(false),
-                Self::On => Ok(true),
-                Self::Toggle => bail!("Not convertable"),
+                Self::Off => Some(false),
+                Self::On => Some(true),
+                Self::Toggle => None,
             }
         }
     }
@@ -124,15 +172,15 @@ pub mod args {
             self as u8
         }
 
-        pub fn from_u8(raw: u8) -> anyhow::Result<Self> {
+        pub fn from_u8(raw: u8) -> Option<Self> {
             match raw {
-                0 => Ok(Trigger::ShortClick),
-                1 => Ok(Trigger::LongClick),
-                2 => Ok(Trigger::Activated),
-                3 => Ok(Trigger::Deactivated),
-                4 => Ok(Trigger::LongActivated),
-                5 => Ok(Trigger::LongDeactivated),
-                _ => bail!("Invalid raw value {}, unable to convert to trigger", raw),
+                0 => Some(Trigger::ShortClick),
+                1 => Some(Trigger::LongClick),
+                2 => Some(Trigger::Activated),
+                3 => Some(Trigger::Deactivated),
+                4 => Some(Trigger::LongActivated),
+                5 => Some(Trigger::LongDeactivated),
+                _ => None,
             }
         }
     }
@@ -150,27 +198,41 @@ pub enum Message {
     /// My output was changed.
     OutputChanged {
         output: OutIdx,
-        state: args::OutputState,
+        state: args::OutputChangeRequest,
     },
 
-    /// My output was changed.
-    InputTriggered { input: InIdx },
+    /// My input/output state (not changed - just current.)
+    StatusIO {
+        io: args::IOType,
+        state: args::IOState,
+    },
+
+    /// My input was changed.
+    InputChanged {
+        input: InIdx,
+        trigger: args::Trigger,
+    },
 
     /// Request output change.
     /// 0 - deactivate, 1 - activate, 2 - toggle, * reserved (eg. time-limited setting)
     SetOutput {
         output: OutIdx,
-        state: args::OutputState,
+        state: args::OutputChangeRequest,
     },
 
+    // Behave as if input was triggered
     TriggerInput {
         input: InIdx,
         trigger: args::Trigger,
     },
 
-    /// Ping. TODO: Handle RTR?
-    RequestStatus,
+    ShutterCmd {
+        shutter_idx: ShutterIdx,
+        cmd: shutters::Cmd,
+    },
 
+    /// Better Ping. TODO: Handle RTR?
+    RequestStatus,
     /// Initial Ping that has some simple data to return in Pong.
     Ping { body: u16 },
     /// Response to Ping.
@@ -179,8 +241,8 @@ pub enum Message {
     /// Periodic not triggered by event status.
     Status {
         uptime: u32,
-        inputs: u16,
-        outputs: u16,
+        errors: u16,
+        warnings: u16,
     },
 
     /// Sent to endpoints.
@@ -222,19 +284,6 @@ pub enum Message {
      */
 }
 
-/*
-/// Holds decoded message with additional metadata.
-Is it useful?
-pub struct Envelope {
-    // 5 bits
-    raw_type: u8,
-    // 6 bits
-    addr: u8,
-    // Decoded message
-    message: Message,
-}
-*/
-
 /// Raw message prepared for sending or just received.
 #[derive(Default, Debug)]
 pub struct MessageRaw {
@@ -267,13 +316,13 @@ impl MessageRaw {
             length: data.len() as u8,
             data: [0; 8],
         };
-        raw.data.copy_from_slice(data);
+        raw.data[0..data.len()].copy_from_slice(data);
         raw
     }
 
     /// Combine parts into 11-bit CAN address.
     pub fn to_can_addr(&self) -> u16 {
-        (self.msg_type as u16 & 0x1F) << 6 | (self.addr as u16 & 0x3F)
+        ((self.msg_type as u16 & 0x1F) << 6) | (self.addr as u16 & 0x3F)
     }
 
     /// Split/parse 11 bit CAN address into msg type and device address
@@ -291,49 +340,52 @@ impl MessageRaw {
         self.length
     }
 
-    pub fn data_as_array(&self) -> &[u8] {
+    pub fn data_as_slice(&self) -> &[u8] {
         &self.data[0..self.length as usize]
     }
 }
 
 impl Message {
-    pub fn from_raw(raw: &MessageRaw) -> anyhow::Result<Self> {
+    pub fn from_raw(raw: &MessageRaw) -> Option<Self> {
         match raw.msg_type {
             msg_type::SET_OUTPUT => {
                 if raw.length != 2 {
-                    bail!("Set output has invalid message length {:?}", raw);
-                } else {
-                    let state = args::OutputState::from_u8(raw.data[1])?;
-                    Ok(Message::SetOutput {
-                        output: raw.data[0],
-                        state,
-                    })
+                    error!("Set output has invalid message length {:?}", raw);
+                    return None;
                 }
+
+                let state = args::OutputChangeRequest::from_u8(raw.data[1])?;
+                Some(Message::SetOutput {
+                    output: raw.data[0],
+                    state,
+                })
             }
             msg_type::TRIGGER_INPUT => {
                 if raw.length != 2 {
-                    bail!("Trigger input has an invalid message length {:?}", raw);
-                } else {
-                    let trigger = args::Trigger::from_u8(raw.data[1])?;
-                    Ok(Message::TriggerInput {
-                        input: raw.data[0],
-                        trigger,
-                    })
+                    warn!("Trigger input has an invalid message length {:?}", raw);
+                    return None;
                 }
+
+                let trigger = args::Trigger::from_u8(raw.data[1])?;
+                Some(Message::TriggerInput {
+                    input: raw.data[0],
+                    trigger,
+                })
             }
             msg_type::CALL_PROC => {
                 if raw.length != 1 {
-                    bail!("Call proc has invalid message length {:?}", raw);
-                } else {
-                    let proc_id: ProcIdx = raw.data[0];
-                    Ok(Message::CallProcedure { proc_id })
+                    warn!("Call proc has invalid message length {:?}", raw);
+                    return None;
                 }
+                let proc_id: ProcIdx = raw.data[0];
+                Some(Message::CallProcedure { proc_id })
             }
             msg_type::TIME_ANNOUNCEMENT => {
                 if raw.length != 2 + 1 + 1 + 1 + 1 + 1 + 1 {
-                    bail!("Time announcement has invalid message length {:?}", raw);
+                    warn!("Time announcement has invalid message length {:?}", raw);
+                    return None;
                 }
-                Ok(Message::TimeAnnouncement {
+                Some(Message::TimeAnnouncement {
                     year: u16::from_le_bytes([raw.data[0], raw.data[1]]),
                     month: raw.data[2],
                     day: raw.data[3],
@@ -344,43 +396,30 @@ impl Message {
                 })
             }
 
-            msg_type::REQUEST_STATUS => Ok(Message::RequestStatus),
+            msg_type::REQUEST_STATUS => Some(Message::RequestStatus),
 
-            msg_type::PING => Ok(Message::Ping {
+            msg_type::PING => Some(Message::Ping {
                 body: u16::from_le_bytes([raw.data[0], raw.data[1]]),
             }),
 
-            msg_type::PONG => Ok(Message::Pong {
+            msg_type::PONG => Some(Message::Pong {
                 body: u16::from_le_bytes([raw.data[0], raw.data[1]]),
             }),
 
-            msg_type::INFO => {
-                let code: u16 = u16::from_le_bytes([raw.data[0], raw.data[1]]);
-                let arg: u32 = 0;
-
-                Ok(Message::Info { code, arg })
+            msg_type::INFO | msg_type::ERROR | msg_type::STATUS | msg_type::STATUS_IO => {
+                info!("Ignoring info/error/status message: {:?}", raw);
+                None
             }
 
-            msg_type::ERROR | msg_type::STATUS => {
-                bail!("Ignoring error/status message: {:?}", raw);
-            }
-
-            msg_type::OUTPUT_CHANGED => {
-                if raw.length != 2 {
-                    bail!("Output changed has invalid message length {:?}", raw);
-                }
-                let output = raw.data[0];
-                let state = args::OutputState::from_u8(raw.data[1])?;
-                Ok(Message::OutputChanged { output, state })
-            }
-
-            msg_type::INPUT_TRIGGERED => {
-                bail!("Ignoring input triggered message {:?}", raw);
+            msg_type::OUTPUT_CHANGED | msg_type::INPUT_CHANGED => {
+                info!("Ignoring output/input change message {:?}", raw);
+                None
             }
 
             _ => {
                 // TBH, probably safe to ignore.
-                bail!("Unable to parse unhandled message type {:?}", raw);
+                warn!("Unable to parse unhandled message type {:?}", raw);
+                None
             }
         }
     }
@@ -416,21 +455,49 @@ impl Message {
                 raw.data[0] = *output;
                 raw.data[1] = state.to_bytes();
             }
-            Message::InputTriggered { input } => {
-                raw.msg_type = msg_type::INPUT_TRIGGERED;
-                raw.length = 1;
-                raw.data[0] = *input; // ? More?
+            Message::StatusIO { io, state } => {
+                raw.msg_type = msg_type::STATUS_IO;
+                raw.length = 3;
+                match io {
+                    args::IOType::Input(idx) => {
+                        raw.data[0] = *idx;
+                        raw.data[1] = 0;
+                    }
+                    args::IOType::Output(idx) => {
+                        raw.data[0] = *idx;
+                        raw.data[1] = 1;
+                    }
+                }
+                raw.data[2] = state.to_bytes();
             }
+            Message::InputChanged { input, trigger } => {
+                raw.msg_type = msg_type::INPUT_CHANGED;
+                raw.length = 2;
+                raw.data[0] = *input; // ? More?
+                raw.data[1] = trigger.to_bytes();
+            }
+            Message::CallProcedure { proc_id } => {
+                raw.msg_type = msg_type::CALL_PROC;
+                raw.length = 1;
+                raw.data[0] = *proc_id;
+            }
+            Message::ShutterCmd { shutter_idx, cmd } => {
+                raw.msg_type = msg_type::CALL_SHUTTER;
+                raw.length = 7;
+                raw.data[0] = *shutter_idx;
+                cmd.to_raw(&mut raw.data[1..6]);
+            }
+
             Message::Status {
                 uptime,
-                inputs,
-                outputs,
+                errors,
+                warnings,
             } => {
                 raw.msg_type = msg_type::STATUS;
                 raw.length = 8;
                 raw.data[0..4].copy_from_slice(&uptime.to_le_bytes());
-                raw.data[4..6].copy_from_slice(&inputs.to_le_bytes());
-                raw.data[6..8].copy_from_slice(&outputs.to_le_bytes());
+                raw.data[4..6].copy_from_slice(&errors.to_le_bytes());
+                raw.data[6..8].copy_from_slice(&warnings.to_le_bytes());
             }
 
             Message::TimeAnnouncement {
@@ -465,12 +532,6 @@ impl Message {
                 raw.data[0..2].copy_from_slice(&body.to_le_bytes());
             }
 
-            Message::CallProcedure { proc_id } => {
-                raw.msg_type = msg_type::CALL_PROC;
-                raw.length = 1;
-                raw.data[0] = *proc_id;
-            }
-
             Message::TriggerInput { input, trigger } => {
                 raw.msg_type = msg_type::TRIGGER_INPUT;
                 raw.length = 2;
@@ -481,15 +542,16 @@ impl Message {
             Message::RequestStatus => {
                 raw.msg_type = msg_type::REQUEST_STATUS;
                 raw.length = 0;
-            } /*
-              Message::TimeAnnouncement { year, month, day, hour, minute, second } => todo!(),
+            }
+
+            /*
+              TODO: Remote bytecode update.
               Message::MicrocodeUpdateInit { addr, length } => todo!(),
               Message::MicrocodeUpdatePart { offset, chunk } => todo!(),
               Message::MicrocodeUpdateEnd { chunks, length, crc } => todo!(),
               Message::MicrocodeUpdateAck { length } => todo!(),
-               */
+             */
         }
-
         raw
     }
 }

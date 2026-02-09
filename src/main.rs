@@ -4,7 +4,10 @@ use clap::Parser;
 use io_gate::comm;
 use io_gate::config::Config;
 use io_gate::homeassistant::{self, discovery, HomeAssistant};
-use io_gate::message::{args::InfoCode, args::OutputState, Message};
+use io_gate::message::{
+    Message,
+    args::{InfoCode, OutputChangeRequest}
+};
 use std::sync::Arc;
 use tracing::{error, info};
 use tracing_subscriber::filter::LevelFilter;
@@ -111,7 +114,7 @@ async fn main() -> anyhow::Result<()> {
 
     info!("io-gate initialized.");
 
-    // USB -> MQTT
+    // CAN -> (USB -> MQTT)
     let ha_sender = ha.clone();
     let task_usb_to_mqtt = async move {
         loop {
@@ -122,10 +125,10 @@ async fn main() -> anyhow::Result<()> {
                 break;
             };
             let msg = Message::from_raw(&raw);
-            let msg = if let Ok(msg) = msg {
+            let msg = if let Some(msg) = msg {
                 msg
             } else {
-                error!("{:?}", msg);
+                error!("Ignoring message we can't parse: {:?}", raw);
                 continue;
             };
             let (device_addr, _) = raw.addr_type();
@@ -133,11 +136,21 @@ async fn main() -> anyhow::Result<()> {
             info!("CAN->RX: Addr {} Message {:?}", device_addr, msg);
             // TODO: Push state messages
             match msg {
+                Message::StatusIO { io, state } => {
+                    info!("Unhandled StatusIO, ignoring: {:?} {:?}", io, state);
+                    continue;
+                }
+
+                Message::InputChanged { input, trigger } => {
+                    info!("Unhandled Input Changed, ignoring: {:?} {:?}", input, trigger);
+                    continue;
+                }
+
                 Message::OutputChanged { output, state } => {
-                    let on = if let Ok(on) = state.try_to_bool() {
+                    let on = if let Some(on) = state.try_to_bool() {
                         on
                     } else {
-                        error!("Triggering (switching current) state is not supported.");
+                        error!("Toggling output state this way is not supported - use absolute states.");
                         continue;
                     };
 
@@ -176,7 +189,7 @@ async fn main() -> anyhow::Result<()> {
         Err::<(), ()>(())
     };
 
-    // MQTT -> USB
+    // MQTT -> USB -> CAN
     let comm_tx = comm.tx.clone();
     let task_mqtt_to_usb = async move {
         loop {
@@ -194,7 +207,7 @@ async fn main() -> anyhow::Result<()> {
                 homeassistant::Incoming::SetOutput { device, output, on } => {
                     let msg = Message::SetOutput {
                         output,
-                        state: OutputState::from_bool(on),
+                        state: OutputChangeRequest::from_bool(on),
                     };
                     let addr = device;
                     let raw = msg.to_raw(addr);

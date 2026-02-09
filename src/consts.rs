@@ -3,6 +3,7 @@
 // Input IO index. `0` is reserved to simplify things.
 pub type InIdx = u8;
 pub type OutIdx = u8;
+pub type ShutterIdx = u8;
 pub type LayerIdx = u8;
 pub type ProcIdx = u8;
 

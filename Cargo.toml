@@ -1,14 +1,14 @@
 [package]
 name = "io-gate"
-version = "0.1.0"
-edition = "2021"
+version = "0.1.5"
+edition = "2024"
 license = "GPL-3.0-or-later"
 homepage = "https://github.com/smartenough-org"
 
 [dependencies]
 tokio = { version = "1", features = ["rt", "macros", "rt-multi-thread", "io-util", "time", "sync"] }
 tokio-serial = "5.4"
-rumqttc = { version = "0.24.0" }
+rumqttc = { version = "0.25.1" }
 
 clap = { version = "4.5", features = ["derive"] }
 clap_derive = { version = "4.5" }
@@ -18,7 +18,7 @@ anyhow = { version = "1" }
 serde = { version = "1", features= ["derive"] }
 serde_json = { version = "1" }
 # Yaml for configuration files
-serde_yaml = { version = "0.9" }
+serde_yaml = { version = "0.9" } # TODO: Migrate to yaml_serde
 
 # Logging
 tracing = { version = "0.1" }

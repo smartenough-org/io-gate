@@ -112,7 +112,7 @@ async fn writer(
             buf[2] = addr;
             buf[3] = msg_type;
             buf[4] = msg.length();
-            buf[5..5 + msg.length() as usize].copy_from_slice(msg.data_as_array());
+            buf[5..5 + msg.length() as usize].copy_from_slice(msg.data_as_slice());
 
             let msg_buf = &buf[0..total_size];
 
