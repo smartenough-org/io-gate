@@ -13,6 +13,7 @@ use crate::{
  * - This gives 6 bit for device address and 5 for message type, ie. 32 different messages
  * TTTTTAAAAAA (T)ype + (A)ddress
  */
+pub const BROADCAST_ADDRESS: u8 = 0x3f;
 
 /// The lower the code, the more important the message on the CAN BUS.
 mod msg_type {
@@ -125,6 +126,14 @@ pub mod args {
                 _ => None,
             }
         }
+
+        pub fn try_to_bool(&self) -> Option<bool> {
+            match self {
+                Self::Off => Some(false),
+                Self::On => Some(true),
+                _ => None,
+            }
+        }
     }
 
     impl InfoCode {
@@ -195,19 +204,19 @@ pub enum Message {
     /// Normal or slightly weird situation happened (eg. initialized)
     Info { code: u16, arg: u32 },
 
-    /// My output was changed.
+    /// Output was changed.
     OutputChanged {
         output: OutIdx,
         state: args::OutputChangeRequest,
     },
 
-    /// My input/output state (not changed - just current.)
+    /// Input/output state (not changed - just current.)
     StatusIO {
         io: args::IOType,
         state: args::IOState,
     },
 
-    /// My input was changed.
+    /// Input was changed.
     InputChanged {
         input: InIdx,
         trigger: args::Trigger,
@@ -406,19 +415,72 @@ impl Message {
                 body: u16::from_le_bytes([raw.data[0], raw.data[1]]),
             }),
 
-            msg_type::INFO | msg_type::ERROR | msg_type::STATUS | msg_type::STATUS_IO => {
-                info!("Ignoring info/error/status message: {:?}", raw);
-                None
+            msg_type::INFO => {
+                let code: u16 = u16::from_le_bytes([raw.data[0], raw.data[1]]);
+                let arg: u32 = 0;
+
+                Some(Message::Info { code, arg })
             }
 
-            msg_type::OUTPUT_CHANGED | msg_type::INPUT_CHANGED => {
-                info!("Ignoring output/input change message {:?}", raw);
-                None
+            msg_type::ERROR => {
+                if raw.length != 4 {
+                    error!("Error has invalid message length {:?}", raw);
+                    return None;
+                }
+                let code = u32::from_le_bytes([raw.data[0], raw.data[1], raw.data[2], raw.data[3]]);
+
+                Some(Message::Error { code })
+            }
+
+            msg_type::OUTPUT_CHANGED => {
+                if raw.length != 2 {
+                    error!("Output changed has invalid message length {:?}", raw);
+                    return None;
+                }
+                let output = raw.data[0];
+                let state = args::OutputChangeRequest::from_u8(raw.data[1])?;
+                Some(Message::OutputChanged { output, state })
+            }
+
+            msg_type::INPUT_CHANGED => {
+                if raw.length != 2 {
+                    error!("InputChanged has invalid message length {:?}", raw);
+                    return None;
+                }
+                let input = raw.data[0];
+                let trigger = args::Trigger::from_u8(raw.data[1])?;
+                Some(Message::InputChanged { input, trigger })
+            }
+
+            msg_type::STATUS_IO => {
+                if raw.length != 3 {
+                    error!("StatusIO has invalid message length {:?}", raw);
+                    return None;
+                }
+                let idx = raw.data[0];
+                let state = if let Some(s) = args::IOState::from_u8(raw.data[2]) {
+                    s
+                } else {
+                    error!("StatusIO has invalid state value {:?}", raw);
+                    return None;
+                };
+
+                let io = match raw.data[1] {
+                    0 => args::IOType::Input(idx),
+                    1 => args::IOType::Output(idx),
+                    _ => {
+                        error!("StatusIO has invalid type argument (not 0, not 1) {:?}", raw);
+                        return None;
+                    }
+                };
+                Some(Message::StatusIO {
+                    state, io
+                })
             }
 
             _ => {
                 // TBH, probably safe to ignore.
-                warn!("Unable to parse unhandled message type {:?}", raw);
+                warn!("Unable to parse unhandled message type {:?}. Message: {:?}", raw.msg_type, raw);
                 None
             }
         }

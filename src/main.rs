@@ -5,8 +5,8 @@ use io_gate::comm;
 use io_gate::config::Config;
 use io_gate::homeassistant::{self, discovery, HomeAssistant};
 use io_gate::message::{
-    Message,
-    args::{InfoCode, OutputChangeRequest}
+    Message, BROADCAST_ADDRESS,
+    args::{InfoCode, OutputChangeRequest, IOType}
 };
 use std::sync::Arc;
 use tracing::{error, info};
@@ -136,21 +136,47 @@ async fn main() -> anyhow::Result<()> {
             info!("CAN->RX: Addr {} Message {:?}", device_addr, msg);
             // TODO: Push state messages
             match msg {
-                Message::StatusIO { io, state } => {
-                    info!("Unhandled StatusIO, ignoring: {:?} {:?}", io, state);
-                    continue;
-                }
-
                 Message::InputChanged { input, trigger } => {
                     info!("Unhandled Input Changed, ignoring: {:?} {:?}", input, trigger);
                     continue;
+                }
+
+                Message::StatusIO { io, state } => {
+                    let on = if let Some(on) = state.try_to_bool() {
+                        on
+                    } else {
+                        // TODO: Handle Error and Unknown!
+                        error!("Output state {:?} is unsupported yet", state);
+                        continue;
+                    };
+
+                    match io {
+                        IOType::Input(idx) => {
+                            error!("Handle input state reporting! {:?} to {:?}", io, state);
+                            // TODO
+                        },
+                        IOType::Output(idx) => {
+                            let result = ha_sender
+                                .send(homeassistant::Outgoing::OutputChanged {
+                                    device: device_addr,
+                                    output: idx,
+                                    on,
+                                })
+                                .await;
+                            if result.is_err() {
+                                // The other end died.
+                                break;
+                            }
+                        }
+                    }
                 }
 
                 Message::OutputChanged { output, state } => {
                     let on = if let Some(on) = state.try_to_bool() {
                         on
                     } else {
-                        error!("Toggling output state this way is not supported - use absolute states.");
+                        // TODO: Handle Error and Unknown!
+                        error!("Output state {:?} is not supported - use absolute states", state);
                         continue;
                     };
 
@@ -226,16 +252,27 @@ async fn main() -> anyhow::Result<()> {
 
     let comm_tx = comm.tx.clone();
     tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+
+        // Start by querying all configured devices to tell us their current state.
+        for (_name, device) in &config.devices {
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
+            let msg = Message::RequestStatus;
+            let raw = msg.to_raw(device.addr);
+            if comm_tx.send(raw).await.is_err() {
+                error!("Unable to send message to request status");
+                break;
+            }
+        }
+
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-
-
             let msg = Message::Ping { body: 32134 };
-            let raw = msg.to_raw(0x3f);
+            let raw = msg.to_raw(BROADCAST_ADDRESS);
             if comm_tx.send(raw).await.is_err() {
                 break;
             }
-
 
             tokio::time::sleep(std::time::Duration::from_secs(60)).await;
 
