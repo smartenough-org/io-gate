@@ -28,27 +28,45 @@ pub struct Component {
     pub name: String,
     pub platform: String,
     /// Changes icon; outlet or switch
-    pub device_class: String,
+    pub device_class: Option<String>,
     // pub icon: String,
     pub unique_id: String,
-    pub command_topic: String,
+    pub command_topic: Option<String>,
     pub state_topic: String,
 }
 
 impl Component {
-    pub fn new_switch(name: &str, device_addr: u8, idx: u8) -> Self {
+    pub fn new_switch(name: &str, device_addr: u8, idx: u8, device_class: Option<String>) -> Self {
         Self {
             name: name.to_string(),
             platform: "switch".to_string(),
-            device_class: "switch".to_string(),
+            device_class: Some(device_class.unwrap_or("switch".to_string())),
             // icon: "mdi:light".to_string(),
             unique_id: format!("io-gate-{}-{}", device_addr, idx),
-            command_topic: format!(
+            command_topic: Some(format!(
                 "{}/{}/switch/{}/set",
                 consts::HA_CONTROL_TOPIC,
                 device_addr,
                 idx
+            )),
+            state_topic: format!(
+                "{}/{}/switch/{}/state",
+                consts::HA_CONTROL_TOPIC,
+                device_addr,
+                idx
             ),
+        }
+    }
+
+    pub fn new_input(name: &str, device_addr: u8, idx: u8, device_class: Option<String>) -> Self {
+        // Class list: https://www.home-assistant.io/integrations/binary_sensor/
+        Self {
+            name: name.to_string(),
+            platform: "binary_sensor".to_string(),
+            device_class: device_class,
+            // icon: "mdi:light".to_string(),
+            unique_id: format!("io-gate-in-{}-{}", device_addr, idx),
+            command_topic: None,
             state_topic: format!(
                 "{}/{}/switch/{}/state",
                 consts::HA_CONTROL_TOPIC,
@@ -93,21 +111,44 @@ pub fn new_device(name: &str, config: &config::DeviceConfig) -> Discovery {
     let mut components = HashMap::new();
 
     // Check for duplicates.
-    let unique_label: HashSet<String> = HashSet::new();
-    let unique_id: HashSet<u8> = HashSet::new();
+    let mut unique_label: HashSet<String> = HashSet::new();
+    let mut unique_id: HashSet<u8> = HashSet::new();
 
     for (label, io) in config.outputs.iter() {
         if unique_label.contains(label) {
-            error!("Duplicated label {} in device {:?}", label, name);
+            error!("Duplicated output label {} in device {:?}", label, name);
             continue;
         }
+
         if unique_id.contains(&io.id) {
-            error!("Duplicated IO id {} in device {:?}", io.id, name);
+            error!("Duplicated output IO id {} in device {:?}", io.id, name);
+            continue;
+        }
+
+        unique_label.insert(label.clone());
+        unique_id.insert(io.id);
+
+        // Create device components.
+        let component = Component::new_switch(&label, config.addr, io.id, None);
+        components.insert(label.clone(), component);
+    }
+
+    // Input/Output IDs can collide. Should labels though?
+    unique_id.clear();
+
+    for (label, io) in config.inputs.iter() {
+        if unique_label.contains(label) {
+            error!("Duplicated input/output label {} in device {:?}", label, name);
+            continue;
+        }
+
+        if unique_id.contains(&io.id) {
+            error!("Duplicated input IO id {} in device {:?}", io.id, name);
             continue;
         }
 
         // Create device components.
-        let component = Component::new_switch(&label, config.addr, io.id);
+        let component = Component::new_input(&label, config.addr, io.id, None);
         components.insert(label.clone(), component);
     }
 

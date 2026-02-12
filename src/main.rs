@@ -69,10 +69,9 @@ async fn init_config(config: &Config, ha: &HomeAssistant) -> anyhow::Result<()> 
 
         // Subscribe to HomeAssistant state changes.
         for component in message.components.values() {
-            ha.send(homeassistant::Outgoing::Subscribe(
-                component.command_topic.clone(),
-            ))
-            .await?;
+            if let Some(command_topic) = &component.command_topic {
+                ha.send(homeassistant::Outgoing::Subscribe(command_topic.clone())).await?;
+            }
         }
 
         // Send discovery message to register/update device in HA.
