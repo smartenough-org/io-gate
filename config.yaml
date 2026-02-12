@@ -1,30 +1,45 @@
-# Each device has an entry
-living-room:
+# This is an example configuration file from my working deployment. Edit to suit
+# your configuration.
+
+# Each device on the CAN bus gets an entry describing its address, outputs and
+# inputs. Devices will be reported to HomeAssistant.
+ground:
   # Device address on the CAN bus
   addr: 1
   outputs:
-    light1:
+    bathroom-top:
       id: 1
       # type: light # TODO?
-    'name with space':
+    garage1:
       id: 2
-    light3:
+    garage2:
       id: 3
-    light4:
+    hall-upstairs:
       id: 4
-    light5:
+    hall-res1:
       id: 5
-    light6:
+    hall:
       id: 6
-    light7:
+    hall-res2:
       id: 7
-    light8:
+    office:
       id: 8
-    light9:
+    patio-table1:
       id: 9
-    light10:
+    patio-table2:
       id: 10
-
+    patio-sconce1:
+      id: 11
+    patio-sconce2:
+      id: 12
+    patio-sconce3:
+      id: 13
+    bathroom-mirror:
+      id: 14
+    staircase-1:
+      id: 15
+    staircase-2:
+      id: 16
 
     # # Number of outputs (switchable)
     # count: 8
@@ -49,9 +64,110 @@ living-room:
     room2-door:
       id: 4
 
-second-floor:
+living-room:
   addr: 2
   outputs:
-    light:
+    kitchen-top:
       id: 1
+    wyspa-l:
+      id: 2
+    wyspa-r:
+      id: 3
+    dining-table:
+      id: 4
+    dining-top-l:
+      id: 5
+    dining-top-r:
+      id: 6
+    salon-top-l:
+      id: 7
+    salon-top-r:
+      id: 8
+    salon-3:
+      id: 9
+    sconce-1:
+      id: 10
+    sconce-2:
+      id: 11
+    sconce-3:
+      id: 12
+    # 4 empty
+  inputs: {}
+
+west:
+  # Device address on the CAN bus
+  addr: 10
+  outputs:
+    cza-top1:
+      id: 1
+    cza-top2:
+      id: 2
+    cza-sconce:
+      id: 3
+    ev-top1:
+      id: 4
+    ev-top2:
+      id: 5
+    ev-sconce:
+      id: 6
+    bathroom-top-single:
+      id: 7
+    bathroom-top-double:
+      id: 8
+    bathroom-mirror1:
+      id: 9
+    bathroom-mirror2:
+      id: 10
+    empty-11:
+      id: 11
+    empty-12:
+      id: 12
+    ev-down:
+      id: 13
+    ev-up:
+      id: 14
+    cza-down:
+      id: 15
+    cza-up:
+      id: 16
+  inputs: {}
+
+east:
+  # Device address on the CAN bus
+  addr: 11
+  outputs:
+    bedroom-top1:
+      id: 1
+    bedroom-top2:
+      id: 2
+    wishes-top1:
+      id: 3
+    wishes-top2:
+      id: 4
+    empty1:
+      id: 5
+    empty2:
+      id: 6
+    empty3:
+      id: 7
+    laundry-top:
+      id: 8
+    empty4:
+      id: 9
+    empty5:
+      id: 10
+    empty6:
+      id: 11
+    empty7:
+      id: 12
+
+    bed-down:
+      id: 13
+    bed-up:
+      id: 14
+    wishes-down:
+      id: 15
+    wishes-up:
+      id: 16
+
   inputs: {}
